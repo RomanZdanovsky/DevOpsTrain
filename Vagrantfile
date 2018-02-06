@@ -1,45 +1,85 @@
+$num_nodes = 2
+
 Vagrant.configure("2") do |config|
 
   config.vm.box = "bertvv/centos72"
   config.vm.box_check_update = false
 
   config.vm.provider "virtualbox" do |vb|
-     vb.gui = false
-     vb.memory = "512"
-     vb.cpus = "1"
+    vb.gui = false
+    vb.memory = "1024"
+    vb.cpus = "1"
   end
 
-  config.vm.define "server1" do |server1|
+  config.vm.define "apache" do |apache|
 
-     server1.vm.hostname = "server1"
-     server1.vm.network "private_network", ip: "192.168.0.10"
+    apache.vm.network "forwarded_port", guest: 80, host: 18080
+    apache.vm.hostname = "apache"
+    apache.vm.network "private_network", ip: "192.168.0.10"
 
-     server1.vm.provision "shell", inline: <<-SHELL
+    apache.vm.provision "shell", inline: <<-SHELL
 
-         sudo echo "192.168.0.11 server2" >> /etc/hosts
+      yum install httpd -y
 
-         sudo yum install -y git
+      systemctl enable httpd
 
-         git clone https://github.com/RomanZdanovsky/DevOpsTrain
+      systemctl start httpd
 
-         export GIT_DISCOVERY_ACROSS_FILESYSTEM=1
+      firewall-cmd --zone=public --add-port=80/tcp --permanent
 
-         cd DevOpsTrain
+      systemctl restart firewalld
 
-         git checkout task2
+      cp /vagrant/mod_jk.so /etc/httpd/modules/
 
-         cat greeting
+      touch /etc/httpd/conf/workers.properties
 
-     SHELL
+      echo "worker.list=lb" >> /etc/httpd/conf/workers.properties
+      echo "worker.lb.type=lb" >> /etc/httpd/conf/workers.properties
+      echo "worker.lb.balance_workers=tomcat1, tomcat2" >> /etc/httpd/conf/workers.properties
+      echo "worker.tomcat1.host=192.168.0.11" >> /etc/httpd/conf/workers.properties
+      echo "worker.tomcat1.port=8009" >> /etc/httpd/conf/workers.properties
+      echo "worker.tomcat1.type=ajp13" >> /etc/httpd/conf/workers.properties
+      echo "worker.tomcat2.host=192.168.0.12" >> /etc/httpd/conf/workers.properties
+      echo "worker.tomcat2.port=8009" >> /etc/httpd/conf/workers.properties
+      echo "worker.tomcat2.type=ajp13" >> /etc/httpd/conf/workers.properties
+
+      echo "LoadModule jk_module modules/mod_jk.so" >> /etc/httpd/conf/httpd.conf
+      echo "JkWorkersFile conf/workers.properties" >> /etc/httpd/conf/httpd.conf
+      echo "JkShmFile /tmp/shm" >> /etc/httpd/conf/httpd.conf
+      echo "JkLogFile logs/mod_jk.log" >> /etc/httpd/conf/httpd.conf
+      echo "JkLogLevel info" >> /etc/httpd/conf/httpd.conf
+      echo "JkMount /test* lb" >> /etc/httpd/conf/httpd.conf
+
+      systemctl restart httpd
+
+    SHELL
   end
 
-  config.vm.define "server2" do |server2|
+  (1..$num_nodes).each do |i|
+    config.vm.define "tomcat#{i}" do |tomcat|
 
-     server2.vm.hostname = "server2"
-     server2.vm.network "private_network", ip: "192.168.0.11"
+      tomcat.vm.hostname = "tomcat#{i}"
+      tomcat.vm.network "private_network", ip: "192.168.0.#{10+i}"
 
-     server2.vm.provision "shell", inline: <<-SHELL
-         sudo echo "192.168.0.10 server1" >> /etc/hosts
-     SHELL
+      tomcat.vm.provision "shell", inline: <<-SHELL
+
+        yum install tomcat tomcat-webapps tomcat-admin-webapps -y
+
+        systemctl enable tomcat
+
+        systemctl start tomcat
+
+        mkdir /usr/share/tomcat/webapps/test
+
+        touch /usr/share/tomcat/webapps/test/index.html
+
+        echo "tomcat#{i}" >> /usr/share/tomcat/webapps/test/index.html
+
+        firewall-cmd --zone=public --add-port=8009/tcp --permanent
+
+        systemctl restart firewalld
+
+      SHELL
+    end
   end
 end
